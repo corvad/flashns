@@ -1,3 +1,3 @@
-module github.com/corvad/dns
+module github.com/corvad/flashns
 
 go 1.27.0
