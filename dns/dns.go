@@ -151,3 +151,15 @@ const (
 	FlagCD     Flags = 1 << 4
 	FlagRCODE  Flags = 0x000F
 )
+
+var lowercaseLUT = func() (t [256]byte) {
+	for i := 0; i < 256; i++ {
+		c := byte(i)
+		if 'A' <= c && c <= 'Z' {
+			t[i] = c + 'a' - 'A'
+		} else {
+			t[i] = c
+		}
+	}
+	return t
+}()

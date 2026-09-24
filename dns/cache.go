@@ -2,13 +2,41 @@ package dns
 
 import (
 	"encoding/binary"
-	"strings"
 	"sync/atomic"
 )
 
-type Cache map[string]*atomic.Pointer[map[uint32][]byte]
+type Cache struct {
+	ptr atomic.Pointer[map[string]map[uint32][]byte]
+}
 
-func Compile(p Provider) (Cache, error) {
+func (c *Cache) Lookup(name []byte, key uint32) ([]byte, bool) {
+	l := c.ptr.Load()
+	if l == nil {
+		return nil, false
+	}
+	pkt, ok := (*l)[string(name)][key]
+	return pkt, ok
+}
+
+func (c *Cache) Reload(p Provider) error {
+	l, err := Compile(p)
+	if err != nil {
+		return err
+	}
+	c.ptr.Store(&l)
+	return nil
+}
+
+func NewCache(p Provider) (*Cache, error) {
+	c := &Cache{}
+	err := c.Reload(p)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func Compile(p Provider) (map[string]map[uint32][]byte, error) {
 	records, err := p.Records()
 	if err != nil {
 		return nil, err
@@ -16,23 +44,25 @@ func Compile(p Provider) (Cache, error) {
 
 	groups := make(map[Query][]Record)
 	for _, r := range records {
-		name := strings.ToLower(r.Name)
-		q := Query{Name: name, Type: r.Type, Class: r.Class}
+		n := []byte(r.Name)
+		for i := range n {
+			n[i] = lowercaseLUT[n[i]]
+		}
+		q := Query{Name: string(n), Type: r.Type, Class: r.Class}
 		groups[q] = append(groups[q], r)
 	}
 
-	c := make(Cache)
+	c := make(map[string]map[uint32][]byte)
 
 	for q, set := range groups {
 		pkt := encodePacket(FlagQR|FlagAA, set, nil, nil)
 		fqdn := fqdnKey(q)
-		if c[fqdn] == nil {
-			a := &atomic.Pointer[map[uint32][]byte]{}
-			m := make(map[uint32][]byte)
-			a.Store(&m)
-			c[fqdn] = a
+		m := c[fqdn]
+		if m == nil {
+			m = make(map[uint32][]byte)
+			c[fqdn] = m
 		}
-		(*c[fqdn].Load())[typeClassKey(q)] = pkt
+		m[typeClassKey(q)] = pkt
 	}
 
 	return c, nil
@@ -54,22 +84,23 @@ func encodePacket(flags Flags, answer, authority, additional []Record) []byte {
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(authority)))
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(additional)))
 	for _, r := range answer {
-		appendRecord(buf, r)
+		buf = appendRecord(buf, r)
 	}
 	for _, r := range authority {
-		appendRecord(buf, r)
+		buf = appendRecord(buf, r)
 	}
 	for _, r := range additional {
-		appendRecord(buf, r)
+		buf = appendRecord(buf, r)
 	}
 	return buf
 }
 
-func appendRecord(buf []byte, r Record) {
+func appendRecord(buf []byte, r Record) []byte {
 	buf = append(buf, 0xC0, 0x0C)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(r.Type))
 	buf = binary.BigEndian.AppendUint16(buf, uint16(r.Class))
 	buf = binary.BigEndian.AppendUint32(buf, uint32(r.TTL))
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(r.Data)))
 	buf = append(buf, r.Data...)
+	return buf
 }
